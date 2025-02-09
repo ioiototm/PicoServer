@@ -4,6 +4,11 @@ PicoServer is a small application I put together in my free time to communicate 
 
 I'm uploading it here in case someone else is working on something similar and finds it useful.
 
+Here's an example of what the window looks like:
+![PicoServer Window](example.jpg)
+
+(icon generated using AI a long time ago, works good enough)
+
 ## Features
 - Monitors CPU, GPU, RAM, and network stats.
 - Sends data to a connected Raspberry Pi Pico display.
