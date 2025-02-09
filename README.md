@@ -14,7 +14,7 @@ I'm uploading it here in case someone else is working on something similar and f
 There's a `config.json` file where you can set your MQTT server details, serial port, and other settings. This file is ignored in `.gitignore`, so make a copy of `config.example.json`, rename it to `config.json`, and fill in your details.
 
 ## Pico Display
-This works alongside my Pico Display project, which receives and displays the data sent from this server. You can find that repo here: [**Pico Display Repo**] (https://github.com/ioiototm/PicoDisplay).
+This works alongside my Pico Display project, which receives and displays the data sent from this server. You can find that repo here: [**Pico Display Repo**](https://github.com/ioiototm/PicoDisplay).
 
 ## Notes
 This was built for my own setup, so you might need to tweak things depending on your hardware and display setup. Also, big thanks to my ever-patient AI assistant for helping me clean up the code and make things work smoothly.
