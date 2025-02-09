@@ -1,0 +1,13 @@
+{
+  "Mqtt": {
+    "BrokerAddress": "0.0.0.0", // Change this to the IP address of your MQTT broker
+    "BrokerPort": 1234, // Change this to the port of your MQTT broker
+    "Username": "username", // Change this to the username of your MQTT broker
+    "Password": "password", // Change this to the password of your MQTT broker
+    "ClientId": "id" // Change this to the client that you want to connect to the MQTT broker
+  },
+  "SerialPort": {
+    "PortName": "COMX", // Change this to the COM port of your device
+    "BaudRate": 115200 // Change this to the baud rate of your device
+  }
+}
