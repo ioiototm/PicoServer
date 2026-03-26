@@ -210,6 +210,11 @@
         private System.Windows.Forms.FlowLayoutPanel flowLayoutPanel2;
         private System.Windows.Forms.Button sleep_button;
         private System.Windows.Forms.Button awake_button;
+        // No need to add ComboBox here if initialized programmatically in PicoServerWindow.cs
+        // However, if you prefer to use the designer, you would add:
+        // private System.Windows.Forms.ComboBox gpuSelectionComboBox;
+        // And then initialize it in the InitializeComponent method.
+        // For this response, I've assumed programmatic initialization for simplicity with the provided context.
     }
 }
 

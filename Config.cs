@@ -4,6 +4,7 @@ public class AppConfig
 {
     public MqttConfig Mqtt { get; set; }
     public SerialPortConfig SerialPort { get; set; }
+    public string PreferredGpuName { get; set; } // Added for preferred GPU
     // Add any other configuration sections you need.
 }
 

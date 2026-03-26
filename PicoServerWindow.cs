@@ -23,6 +23,7 @@ namespace PicoServer
         //monitor
         private Monitor monitor;
         private NotifyIcon trayIcon;
+        private ComboBox gpuSelectionComboBox; // Added for GPU selection
 
         private bool exitButtonClicked = false;
 
@@ -35,7 +36,11 @@ namespace PicoServer
 
 
             //start serial port
-            monitor = new Monitor(richTextBox1,config);
+            monitor = new Monitor(richTextBox1, config);
+
+            // Initialize and populate GPU selection ComboBox
+            InitializeGpuSelectionComboBox();
+
 
             SystemEvents.SessionSwitch += SystemEvents_SessionSwitch;
             SystemEvents.PowerModeChanged += SystemEvents_PowerModeChanged;
@@ -51,9 +56,54 @@ namespace PicoServer
                 {
                     this.Show();
                     this.WindowState = FormWindowState.Normal;
+                    // Ensure the ComboBox is brought to front if it was hidden
+                    gpuSelectionComboBox.BringToFront();
                 }
             };
-            
+
+        }
+
+        private void InitializeGpuSelectionComboBox()
+        {
+            gpuSelectionComboBox = new ComboBox();
+            gpuSelectionComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            gpuSelectionComboBox.Location = new System.Drawing.Point(15, 280); // Adjust location as needed
+            gpuSelectionComboBox.Size = new System.Drawing.Size(200, 21); // Adjust size as needed
+            gpuSelectionComboBox.Name = "gpuSelectionComboBox";
+
+            List<string> gpuNames = monitor.GetGpuNames();
+            if (gpuNames.Any())
+            {
+                gpuSelectionComboBox.Items.AddRange(gpuNames.ToArray());
+                // Try to select preferred GPU from config, otherwise select the first one
+                string preferredGpu = monitor.GetSelectedGpuName();
+                if (!string.IsNullOrEmpty(preferredGpu) && gpuNames.Contains(preferredGpu))
+                {
+                    gpuSelectionComboBox.SelectedItem = preferredGpu;
+                }
+                else
+                {
+                    gpuSelectionComboBox.SelectedIndex = 0;
+                }
+            }
+            else
+            {
+                gpuSelectionComboBox.Items.Add("No GPUs Found");
+                gpuSelectionComboBox.SelectedIndex = 0;
+                gpuSelectionComboBox.Enabled = false;
+            }
+
+            gpuSelectionComboBox.SelectedIndexChanged += GpuSelectionComboBox_SelectedIndexChanged;
+            this.Controls.Add(gpuSelectionComboBox);
+            gpuSelectionComboBox.BringToFront(); // Ensure it's visible
+        }
+
+        private void GpuSelectionComboBox_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (gpuSelectionComboBox.SelectedItem != null && gpuSelectionComboBox.Enabled)
+            {
+                monitor.SetSelectedGpu(gpuSelectionComboBox.SelectedItem.ToString());
+            }
         }
 
 
@@ -68,13 +118,14 @@ namespace PicoServer
                 this.Hide();
                 trayIcon.Visible = true;
             }
-            //if shutdown reason, send SLEEP command
-            if(e.CloseReason == CloseReason.WindowsShutDown)            
+            //if shutdown reason, send SLEEP command and mark offline
+            if (e.CloseReason == CloseReason.WindowsShutDown)
             {
                 monitor.send("SLEEP");
+                monitor.PublishOfflineAsync().GetAwaiter().GetResult();
             }
         }
-        
+
 
         //send button onclick
         private void button1_Click(object sender, EventArgs e)
@@ -82,7 +133,7 @@ namespace PicoServer
             monitor.send(txtBox_command.Text);
         }
 
-        
+
         private void SystemEvents_SessionSwitch(object sender, SessionSwitchEventArgs e)
         {
             if (e.Reason == SessionSwitchReason.SessionLock)
@@ -97,19 +148,22 @@ namespace PicoServer
             }
         }
 
-        
 
-async void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArgs e)
+
+        async void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
             switch (e.Mode)
             {
                 case PowerModes.Suspend:
                     // The computer is entering sleep mode
                     monitor.send("SLEEP");
+                    await monitor.PublishOfflineAsync();
                     break;
                 case PowerModes.Resume:
                     // The computer is waking up from sleep mode
-                    await Task.Run(async () => await monitor.ReconnectMqttClient());
+                    await Task.Delay(2000); // Give system time to stabilize after wake-up
+                    await monitor.ReconnectMqttClient();
+                    monitor.ReInitializeHardware(); // Add this new method call
                     monitor.send("WAKEUP");
                     break;
                 default:
@@ -118,22 +172,23 @@ async void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArg
             }
         }
 
-        private void btn_exit_Click(object sender, EventArgs e)
+        private async void btn_exit_Click(object sender, EventArgs e)
         {
             exitButtonClicked = true;
+            await monitor.PublishOfflineAsync();
             Application.Exit();
         }
 
         private void comboBox1_SelectedIndexChanged(object sender, EventArgs e)
         {
-            
+
 
         }
 
         private void radioButton1_CheckedChanged(object sender, EventArgs e)
         {
 
-          
+
 
             //if clicked off, do nothing
             if (!rgb_single_color.Checked)
@@ -142,7 +197,7 @@ async void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArg
             }
 
             //show color dialog
-            if(colorDialog1.ShowDialog() == DialogResult.OK)
+            if (colorDialog1.ShowDialog() == DialogResult.OK)
             {
                 //get color
                 Color c = colorDialog1.Color;
@@ -206,19 +261,24 @@ async void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArg
 
         private IMqttClient _mqttClient;
         private AppConfig _config;
+        private List<IHardware> _gpus; // Added to store detected GPUs
+        private IHardware _selectedGpu; // Added to store the selected GPU
+        private string _preferredGpuName; // Added to store preferred GPU name from config
 
         //constructor
         public Monitor(RichTextBox t1, AppConfig config)
         {
             this.textBox_info = t1;
+            _config = config; // Store config
+            _preferredGpuName = _config.PreferredGpuName; // Get preferred GPU name
 
             //start serial port
             serialPort = new System.IO.Ports.SerialPort(config.SerialPort.PortName, config.SerialPort.BaudRate);
-            serialPort.Open(); 
-            
+            serialPort.Open();
+
             //send WAKEUP command
             send("WAKEUP");
-            
+
             //start timer
             pollingTimer = new Timer();
             pollingTimer.Interval = 1000;
@@ -238,10 +298,56 @@ async void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArg
             computer.Open();
             computer.Accept(new UpdateVisitor());
 
-            _config = config;
+            // Initialize GPU list and select default
+            InitializeGpus();
+
 
             InitialiseMqttClient();
 
+        }
+
+        private void InitializeGpus()
+        {
+            _gpus = new List<IHardware>();
+            foreach (IHardware hardware in computer.Hardware)
+            {
+                if (hardware.HardwareType == HardwareType.GpuNvidia || hardware.HardwareType == HardwareType.GpuAmd)
+                {
+                    _gpus.Add(hardware);
+                }
+            }
+
+            if (_gpus.Any())
+            {
+                // Try to select preferred GPU
+                if (!string.IsNullOrEmpty(_preferredGpuName))
+                {
+                    _selectedGpu = _gpus.FirstOrDefault(g => g.Name.Equals(_preferredGpuName, StringComparison.OrdinalIgnoreCase));
+                }
+                // If preferred GPU not found or not set, select the first one
+                if (_selectedGpu == null)
+                {
+                    _selectedGpu = _gpus.First();
+                }
+            }
+        }
+
+        public List<string> GetGpuNames()
+        {
+            return _gpus.Select(g => g.Name).ToList();
+        }
+
+        public string GetSelectedGpuName()
+        {
+            return _selectedGpu?.Name;
+        }
+
+        public void SetSelectedGpu(string gpuName)
+        {
+            _selectedGpu = _gpus.FirstOrDefault(g => g.Name.Equals(gpuName, StringComparison.OrdinalIgnoreCase));
+            // Optionally, save this preference back to config if desired
+            // _config.PreferredGpuName = gpuName;
+            // ConfigLoader.SaveConfig("config.json", _config);
         }
 
         private async void InitialiseMqttClient()
@@ -253,89 +359,133 @@ async void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArg
                 .WithClientId(_config.Mqtt.ClientId)
                 .WithTcpServer(_config.Mqtt.BrokerAddress, _config.Mqtt.BrokerPort)
                 .WithCredentials(_config.Mqtt.Username, _config.Mqtt.Password)
+                .WithWillTopic("homeassistant/sensor/THE-BEAST/availability")
+                .WithWillPayload("offline")
+                .WithWillRetain(true)
                 .WithCleanSession()
                 .Build();
 
-            await _mqttClient.ConnectAsync(options,System.Threading.CancellationToken.None);
+            await _mqttClient.ConnectAsync(options, System.Threading.CancellationToken.None);
 
-            //send configure message:
-            /*{
-            "device_class": "power",
-            "unique_id": "your-unique-id",
-            "object_id": "THE-BEAST_PSUWattage",
-            "unit_of_measurement": "W",
-            "availability_topic": "homeassistant/sensor/THE-BEAST/availability",
-            "device": {
-            "identifiers": "hass.agent-THE-BEAST",
-            "manufacturer": "HASS.Agent Team",
-            "model": "Microsoft Windows NT",
-            "sw_version": "2.0.1",
-            "name": "THE-BEAST"
-            },
-            "state_topic": "homeassistant/sensor/THE-BEAST/PSUWattage/state",
-            "name": "PSUWattage",
-            "platform": "mqtt"
-            }
-            */
+            await PublishAvailability("online");
+
             var message = new MqttApplicationMessageBuilder()
                 .WithTopic("homeassistant/sensor/THE-BEAST/PSUWattage/config")
-                .WithPayload("{\"device_class\": \"power\",\"unique_id\": \"your-unique-id\",\"object_id\": \"THE-BEAST_PSUWattage\",\"unit_of_measurement\": \"W\",\"availability_topic\": \"homeassistant/sensor/THE-BEAST/availability\",\"device\": {\"identifiers\": \"hass.agent-THE-BEAST\",\"manufacturer\": \"HASS.Agent Team\",\"model\": \"Microsoft Windows NT\",\"sw_version\": \"2.0.1\",\"name\": \"THE-BEAST\"},\"state_topic\": \"homeassistant/sensor/THE-BEAST/PSUWattage/state\",\"name\": \"PSUWattage\",\"platform\": \"mqtt\"}")
+                .WithPayload("{\"device_class\": \"power\",\"state_class\": \"measurement\",\"unique_id\": \"your-unique-id\",\"object_id\": \"THE-BEAST_PSUWattage\",\"unit_of_measurement\": \"W\",\"availability_topic\": \"homeassistant/sensor/THE-BEAST/availability\",\"device\": {\"identifiers\": \"hass.agent-THE-BEAST\",\"manufacturer\": \"HASS.Agent Team\",\"model\": \"Microsoft Windows NT\",\"sw_version\": \"2.0.1\",\"name\": \"THE-BEAST\"},\"state_topic\": \"homeassistant/sensor/THE-BEAST/PSUWattage/state\",\"name\": \"PSUWattage\",\"platform\": \"mqtt\"}")
                 .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.ExactlyOnce)
                 .WithRetainFlag()
                 .Build();
 
             await _mqttClient.PublishAsync(message, System.Threading.CancellationToken.None);
-
-
         }
 
-//function to send a string over serial with \n at the end
-public void send(string s)
-{
-    serialPort.Write(s + "\n");
-}
-
-
-private bool everyTwoSeconds = false;
-//private float currentWattage = 0;
-private float? previousWattage = null;
-
-private void ProcessWattage(float? wattage)
-{
-    if (wattage == null || wattage == 0)
-    {
-        if (previousWattage != null)
+        private async Task PublishAvailability(string status)
         {
-            wattage = (float)previousWattage;
+            var message = new MqttApplicationMessageBuilder()
+                .WithTopic("homeassistant/sensor/THE-BEAST/availability")
+                .WithPayload(status)
+                .WithRetainFlag()
+                .Build();
+
+            await _mqttClient.PublishAsync(message, System.Threading.CancellationToken.None);
         }
-        else
+
+        //function to send a string over serial with \n at the end
+        public void send(string s)
         {
-            return;
+            serialPort.Write(s + "\n");
         }
-    }
 
-    previousWattage = wattage;
+        public async Task PublishOfflineAsync()
+        {
+            if (_mqttClient != null && _mqttClient.IsConnected)
+                await PublishAvailability("offline");
+        }
 
-    SendWattageToMQTT(wattage);
 
-}
+        private bool everyTwoSeconds = false;
+        //private float currentWattage = 0;
+        private float? previousWattage = null;
+
+        private void ProcessWattage(float? wattage)
+        {
+            if (wattage == null || wattage == 0)
+            {
+                if (previousWattage != null)
+                {
+                    wattage = (float)previousWattage;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            previousWattage = wattage;
+
+            SendWattageToMQTT(wattage);
+
+        }
 
         public async Task ReconnectMqttClient()
         {
-            while (!_mqttClient.IsConnected)
+            int retryCount = 0;
+            const int maxRetries = 5;
+            
+            while (!_mqttClient.IsConnected && retryCount < maxRetries)
             {
                 try
                 {
-                    await _mqttClient.ConnectAsync(_mqttClient.Options, System.Threading.CancellationToken.None);
-                    Console.WriteLine("MQTT client reconnected.");
+                    retryCount++;
+                    textBox_info.Invoke((MethodInvoker)delegate {
+                        textBox_info.AppendText($"Attempting MQTT reconnection (try {retryCount}/{maxRetries})...\n");
+                    });
+                    
+                    var options = new MqttClientOptionsBuilder()
+                        .WithClientId(_config.Mqtt.ClientId)
+                        .WithTcpServer(_config.Mqtt.BrokerAddress, _config.Mqtt.BrokerPort)
+                        .WithCredentials(_config.Mqtt.Username, _config.Mqtt.Password)
+                        .WithWillTopic("homeassistant/sensor/THE-BEAST/availability")
+                        .WithWillPayload("offline")
+                        .WithWillRetain(true)
+                        .WithCleanSession()
+                        .Build();
+
+                    await _mqttClient.ConnectAsync(options, System.Threading.CancellationToken.None);
+
+                    await PublishAvailability("online");
+
+                    textBox_info.Invoke((MethodInvoker)delegate {
+                        textBox_info.AppendText("MQTT client reconnected successfully\n");
+                    });
+
+                    // Re-publish configuration message
+                    var message = new MqttApplicationMessageBuilder()
+                        .WithTopic("homeassistant/sensor/THE-BEAST/PSUWattage/config")
+                        .WithPayload("{\"device_class\": \"power\",\"state_class\": \"measurement\",\"unique_id\": \"your-unique-id\",\"object_id\": \"THE-BEAST_PSUWattage\",\"unit_of_measurement\": \"W\",\"availability_topic\": \"homeassistant/sensor/THE-BEAST/availability\",\"device\": {\"identifiers\": \"hass.agent-THE-BEAST\",\"manufacturer\": \"HASS.Agent Team\",\"model\": \"Microsoft Windows NT\",\"sw_version\": \"2.0.1\",\"name\": \"THE-BEAST\"},\"state_topic\": \"homeassistant/sensor/THE-BEAST/PSUWattage/state\",\"name\": \"PSUWattage\",\"platform\": \"mqtt\"}")
+                        .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.ExactlyOnce)
+                        .WithRetainFlag()
+                        .Build();
+
+                    await _mqttClient.PublishAsync(message, System.Threading.CancellationToken.None);
+
+                    return;
                 }
-                catch
+                catch (Exception ex)
                 {
-                    Console.WriteLine("MQTT reconnection failed. Retrying...");
+                    textBox_info.Invoke((MethodInvoker)delegate {
+                        textBox_info.AppendText($"MQTT reconnection attempt failed: {ex.Message}\n");
+                    });
                     await Task.Delay(5000); // Retry every 5 seconds
                 }
             }
 
+            if (!_mqttClient.IsConnected)
+            {
+                textBox_info.Invoke((MethodInvoker)delegate {
+                    textBox_info.AppendText("Failed to reconnect MQTT after maximum retries\n");
+                });
+            }
         }
 
 
@@ -351,7 +501,7 @@ private void ProcessWattage(float? wattage)
 
                 var message = new MqttApplicationMessageBuilder()
                     .WithTopic("homeassistant/sensor/THE-BEAST/PSUWattage/state")
-                    .WithPayload(wattage.ToString())
+                    .WithPayload(wattage.Value.ToString(System.Globalization.CultureInfo.InvariantCulture))
                     .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.ExactlyOnce)
                     .WithRetainFlag()
                     .Build();
@@ -378,250 +528,225 @@ private void ProcessWattage(float? wattage)
         //poll hardware and send over serial
         public async void pollHardwareAndSendOverSerial(object sender, EventArgs e)
         {
-
-            string cpuTemp = "";
-            string gpuTemp = "";
-            string ramUsage = "";
-            string cpuUsage = "";
-            string vramUsage = "";
-            string downloadSpeed = "";
-            string uploadSpeed = "";
-
-            //poll hardware
-
-            if (everyTwoSeconds)
+            // Stop the timer so a slow poll can't overlap with the next tick
+            pollingTimer.Stop();
+            try
             {
-                everyTwoSeconds = false;
-            }
-            else
-            {
-                everyTwoSeconds = true;
-            }
+                // Update all hardware in parallel FIRST so the sensor reads below are fresh this tick,
+                // not stale from the previous cycle
+                await Task.WhenAll(computer.Hardware.Select(h => Task.Run(() => h.Update())));
 
-            foreach (IHardware hardware in computer.Hardware)
-            {
+                // Store sensor values as doubles directly — avoids string→double round-trips
+                // and the locale bug where sensor.Value.ToString() could produce "123,4" on some systems
+                double cpuTemp = 0;
+                double gpuTemp = 0;
+                double ramUsage = 0;
+                double cpuUsage = 0;
+                double vramUsage = 0;
+                string downloadSpeed = "0";
+                string uploadSpeed = "0";
 
-                //skip if not cpu or gpu or ram
-                //
-                if (hardware.HardwareType != HardwareType.Cpu && hardware.HardwareType != HardwareType.GpuNvidia && hardware.HardwareType != HardwareType.Memory && hardware.HardwareType != HardwareType.Psu && hardware.HardwareType != HardwareType.Network)
+                if (everyTwoSeconds)
                 {
-                    continue;
+                    everyTwoSeconds = false;
                 }
-                //Console.WriteLine("Hardware: {0}", hardware.Name);
-
-                //check if psu
-                if (hardware.HardwareType == HardwareType.Psu)
+                else
                 {
-                    foreach (ISensor sensor in hardware.Sensors)
+                    everyTwoSeconds = true;
+                }
+
+                foreach (IHardware hardware in computer.Hardware)
+                {
+                    if (hardware.HardwareType != HardwareType.Cpu &&
+                        hardware.HardwareType != HardwareType.Memory &&
+                        hardware.HardwareType != HardwareType.Psu &&
+                        hardware.HardwareType != HardwareType.Network)
                     {
-                        //only print if it's power
-                        if (sensor.Name != "Total watts" && sensor.Name != "Total Output")
+                        if (hardware.HardwareType == HardwareType.GpuNvidia || hardware.HardwareType == HardwareType.GpuAmd)
+                        {
+                            if (_selectedGpu == null || hardware.Identifier != _selectedGpu.Identifier)
+                                continue;
+                        }
+                        else
                         {
                             continue;
                         }
+                    }
 
-                        if (everyTwoSeconds)
+                    if (hardware.HardwareType == HardwareType.Psu)
+                    {
+                        foreach (ISensor sensor in hardware.Sensors)
                         {
+                            if (sensor.Name != "Total watts" && sensor.Name != "Total Output")
+                                continue;
 
-                            //Console.WriteLine("\t\tSENSOR WATTAGE: {0}, value: {1}", sensor.Name, sensor.Value);
+                            if (everyTwoSeconds)
+                                ProcessWattage(sensor.Value);
+                        }
+                    }
 
-                            ProcessWattage(sensor.Value);
+                    foreach (IHardware subhardware in hardware.SubHardware)
+                    {
+                        Console.WriteLine("\tSubhardware: {0}", subhardware.Name);
 
+                        foreach (ISensor sensor in subhardware.Sensors)
+                        {
+                            if (sensor.SensorType != SensorType.Temperature)
+                            {
+                                //continue;
+                            }
+                        }
+                    }
 
+                    foreach (ISensor sensor in hardware.Sensors)
+                    {
+                        if (sensor.Name != "CPU Package" && sensor.Name != "CPU Total" && sensor.Name != "Memory Used" && sensor.Name != "Download Speed" && sensor.Name != "Upload Speed")
+                        {
+                            if (!(hardware == _selectedGpu && (sensor.Name == "GPU Core" || sensor.Name == "GPU Memory Used")))
+                                continue;
                         }
 
+                        // sensor.Value is float? — using ?? 0 handles null safely without any string conversion
+                        if (hardware.HardwareType == HardwareType.Cpu && sensor.SensorType == SensorType.Temperature)
+                            cpuTemp = sensor.Value ?? 0;
+
+                        if (hardware.HardwareType == HardwareType.Cpu && sensor.SensorType == SensorType.Load)
+                            cpuUsage = sensor.Value ?? 0;
+
+                        if (hardware.HardwareType == HardwareType.Memory && sensor.SensorType == SensorType.Data)
+                            ramUsage = sensor.Value ?? 0;
+
+                        // Network speeds stay as strings since they get overwritten with a formatted value later.
+                        // InvariantCulture ensures "123.4" not "123,4" regardless of system locale
+                        if (hardware.HardwareType == HardwareType.Network && sensor.SensorType == SensorType.Throughput && hardware.Name == "Ethernet" && sensor.Name == "Download Speed")
+                            downloadSpeed = sensor.Value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "0";
+
+                        if (hardware.HardwareType == HardwareType.Network && sensor.SensorType == SensorType.Throughput && hardware.Name == "Ethernet" && sensor.Name == "Upload Speed")
+                            uploadSpeed = sensor.Value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "0";
                     }
                 }
 
-                ////if it's hardware type netwrok and the name is Ethernet
-                //if (hardware.HardwareType == HardwareType.Network && hardware.Name == "Ethernet")
-                //{
-                //    foreach (ISensor sensor in hardware.Sensors)
-                //    {
-                //        //only print if it's download or upload speed
-                //        if (sensor.Name != "Download Speed" && sensor.Name != "Upload Speed")
-                //        {
-                //            continue;
-                //        }
-                //        //Console.WriteLine("\t\tSENSOR: {0}, value: {1}", sensor.Name, sensor.Value);
-                //        if (sensor.Name == "Download Speed")
-                //        {
-                //            downloadSpeed = sensor.Value.ToString();
-                //        }
-                //        if (sensor.Name == "Upload Speed")
-                //        {
-                //            uploadSpeed = sensor.Value.ToString();
-                //        }
-                //    }
-                //}
-
-
-
-                foreach (IHardware subhardware in hardware.SubHardware)
+                // GPU sensors — no separate Update() call needed, already updated at the top
+                if (_selectedGpu != null)
                 {
-                    Console.WriteLine("\tSubhardware: {0}", subhardware.Name);
-
-                    foreach (ISensor sensor in subhardware.Sensors)
+                    foreach (ISensor sensor in _selectedGpu.Sensors)
                     {
-                        //skip if not temperature
-
-                        if (sensor.SensorType != SensorType.Temperature)
-                        {
-                            //continue;
-                        }
-
-                        //Console.WriteLine("\t\tSensor: {0}, value: {1}", sensor.Name, sensor.Value);
+                        if (sensor.Name == "GPU Core" && sensor.SensorType == SensorType.Temperature)
+                            gpuTemp = sensor.Value ?? 0;
+                        else if (sensor.Name == "GPU Memory Used" && sensor.SensorType == SensorType.SmallData)
+                            vramUsage = sensor.Value ?? 0;
                     }
                 }
 
-                foreach (ISensor sensor in hardware.Sensors)
-                {
+                double ramUsagePercent = (ramUsage / 128) * 100;
+                double vramUsagePercent = (vramUsage / 24564) * 100;
 
-                    //only print if it's the package temperature, CPU Total, Ram Usage, or GPU temperature
-                    if (sensor.Name != "CPU Package" && sensor.Name != "CPU Total" && sensor.Name != "GPU Core" && sensor.Name != "Memory Used" && sensor.Name != "GPU Memory Used" && sensor.Name != "Download Speed" && sensor.Name != "Upload Speed")
-                    {
-                        continue;
-                    }
+                // TryParse with InvariantCulture safely handles the locale issue and defaults to 0 on failure
+                double.TryParse(downloadSpeed, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double dsBytes);
+                double dsBps = dsBytes * 8;
+                double dsKbps = dsBps / 1000.0;
 
-                    //check if it's cpu and if it's temperature and save it
-                    if (hardware.HardwareType == HardwareType.Cpu && sensor.SensorType == SensorType.Temperature)
-                    {
-                        cpuTemp = sensor.Value.ToString();
-                    }
+                if (dsKbps < 100)
+                    downloadSpeed = dsKbps.ToString("F1") + " kbps";
+                else
+                    downloadSpeed = (dsBps / 1000000.0).ToString("F1") + " mbps";
 
-                    //check if it's cpu and if it's usage/load and save it
-                    if (hardware.HardwareType == HardwareType.Cpu && sensor.SensorType == SensorType.Load)
-                    {
-                        cpuUsage = sensor.Value.ToString();
-                    }
+                double.TryParse(uploadSpeed, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double usBytes);
+                double usBps = usBytes * 8;
+                double usKbps = usBps / 1000.0;
 
-                    //check if it's gpu and if it's temperature and save it
-                    if (hardware.HardwareType == HardwareType.GpuNvidia && sensor.SensorType == SensorType.Temperature)
-                    {
-                        gpuTemp = sensor.Value.ToString();
-                    }
+                if (usKbps < 100)
+                    uploadSpeed = usKbps.ToString("F1") + " kbps";
+                else
+                    uploadSpeed = (usBps / 1000000.0).ToString("F1") + " mbps";
 
-                    if (hardware.HardwareType == HardwareType.GpuNvidia && sensor.SensorType == SensorType.SmallData)
-                    {
-                        vramUsage = sensor.Value.ToString();
-                    }
-                    
-
-                    //check if it's ram and if it's usage and save it
-                    if (hardware.HardwareType == HardwareType.Memory && sensor.SensorType == SensorType.Data)
-                    {
-                        ramUsage = sensor.Value.ToString();
-                    }
-
-                    //check if it's network and if it's download speed and save it
-                    if (hardware.HardwareType == HardwareType.Network && sensor.SensorType == SensorType.Throughput && hardware.Name == "Ethernet" && sensor.Name == "Download Speed")
-                    {
-
-                        downloadSpeed = sensor.Value.ToString();
-
-                    }
-
-                    //check if it's network and if it's upload speed and save it
-                    if (hardware.HardwareType == HardwareType.Network && sensor.SensorType == SensorType.Throughput && hardware.Name == "Ethernet" && sensor.Name == "Upload Speed")
-                    {
-                        
-                        uploadSpeed = sensor.Value.ToString();
-                    }
-
-                    //print the sensor value
-                    //Console.WriteLine("\t\tSensor: {0}, value: {1}", sensor.Name, sensor.Value);
-
-
-
-                }
+                // Values are already doubles now — no Convert.ToDouble needed
+                serialPort.Write("CPU:" + Math.Round(cpuTemp) + ":" + Math.Round(cpuUsage) + ";GPU:" + Math.Round(gpuTemp) + ";VMEM:" + Math.Round(vramUsagePercent) + ";RAM:" + Math.Round(ramUsagePercent) + ";DS:" + downloadSpeed + ";US:" + uploadSpeed + "\n");
+                textBox_info.Text = "CPU:" + Math.Round(cpuTemp) + ":" + Math.Round(cpuUsage) + ";GPU:" + Math.Round(gpuTemp) + ";VMEM:" + Math.Round(vramUsagePercent) + ";RAM:" + Math.Round(ramUsagePercent) + ";DS:" + downloadSpeed + ";US:" + uploadSpeed + "\n";
             }
-
-            //go through each hardware and update it
-            foreach (IHardware hardware in computer.Hardware)
+            finally
             {
-                await Task.Run(() => hardware.Update());
+                // Always restart the timer, even if something threw — next tick starts after this poll fully finishes
+                pollingTimer.Start();
             }
-
-            //update ram usage to be a percentage instead of a number, max is 96GB
-            double ramUsagePercent = (Convert.ToDouble(ramUsage) / 96) * 100;
-
-            //update vram usage to be a percentage instead of a number, max is 24564
-            double vramUsagePercent = (Convert.ToDouble(vramUsage) / 24564) * 100;
-
-            // Convert the download speed (given in B/s) to bits per second.
-            double dsBytes = Convert.ToDouble(downloadSpeed);
-            double dsBps = dsBytes * 8;
-            double dsKbps = dsBps / 1000.0;
-
-            // Use kbps if the speed is less than 100 kbps; otherwise, convert to Mbps.
-            if (dsKbps < 100)
-            {
-                // Use no decimal places for kbps.
-                downloadSpeed = dsKbps.ToString("F1") + " kbps";
-            }
-            else
-            {
-                // For speeds 100 kbps and above, convert to Mbps with one decimal place.
-                downloadSpeed = (dsBps / 1000000.0).ToString("F1") + " mbps";
-            }
-
-            // Do the same for the upload speed.
-            double usBytes = Convert.ToDouble(uploadSpeed);
-            double usBps = usBytes * 8;
-            double usKbps = usBps / 1000.0;
-
-            if (usKbps < 100)
-            {
-                uploadSpeed = usKbps.ToString("F1") + " kbps";
-            }
-            else
-            {
-                uploadSpeed = (usBps / 1000000.0).ToString("F1") + " mbps";
-            }
-
-
-            //send to port like CPU:TEMP:USAGE;GPU:TEMP:VRAM:USAGE;RAM:USAGE; use the rounded values
-            serialPort.Write("CPU:" + Math.Round(Convert.ToDouble(cpuTemp)) + ":" + Math.Round(Convert.ToDouble(cpuUsage)) + ";GPU:" + Math.Round(Convert.ToDouble(gpuTemp)) + ";VMEM:" + Math.Round(vramUsagePercent) + ";RAM:" + Math.Round(ramUsagePercent) + ";DS:" + downloadSpeed + ";US:" + uploadSpeed + "\n");
-            //write to t1 what was sent
-            textBox_info.Text = "CPU:" + Math.Round(Convert.ToDouble(cpuTemp)) + ":" + Math.Round(Convert.ToDouble(cpuUsage)) + ";GPU:" + Math.Round(Convert.ToDouble(gpuTemp)) + ";VMEM:" + Math.Round(vramUsagePercent) + ";RAM:" + Math.Round(ramUsagePercent) + ";DS:" + downloadSpeed + ";US:" + uploadSpeed + "\n";
-
         }
 
-//variables
-private Timer pollingTimer;
-private System.IO.Ports.SerialPort serialPort;
-private Computer computer;
-private RichTextBox textBox_info;
+        public void ReInitializeHardware()
+        {
+            try
+            {
+                // Restart hardware monitoring
+                computer.Close();
+                computer = new Computer
+                {
+                    IsCpuEnabled = true,
+                    IsGpuEnabled = true,
+                    IsMemoryEnabled = true,
+                    IsPsuEnabled = true,
+                    IsNetworkEnabled = true
+                };
+                computer.Open();
+                computer.Accept(new UpdateVisitor());
 
-}
+                // Re-initialize GPU list and selection
+                InitializeGpus();
+
+                // Force a hardware update cycle
+                foreach (IHardware hardware in computer.Hardware)
+                {
+                    hardware.Update();
+                }
+
+                // Reset previous wattage to force a new reading
+                previousWattage = null;
+
+                textBox_info.Invoke((MethodInvoker)delegate {
+                    textBox_info.AppendText("Hardware monitoring reinitialized after wake-up\n");
+                });
+            }
+            catch (Exception ex)
+            {
+                textBox_info.Invoke((MethodInvoker)delegate {
+                    textBox_info.AppendText("Error reinitializing hardware: " + ex.Message + "\n");
+                });
+            }
+        }
+
+        //variables
+        private Timer pollingTimer;
+        private System.IO.Ports.SerialPort serialPort;
+        private Computer computer;
+        private RichTextBox textBox_info;
+
+    }
 
 
 
-public class UpdateVisitor : IVisitor
-{
-public void VisitComputer(IComputer computer)
-{
-    computer.Traverse(this);
-}
-public void VisitHardware(IHardware hardware)
-{
-    hardware.Update();
-    foreach (IHardware subHardware in hardware.SubHardware) subHardware.Accept(this);
-}
-public void VisitSensor(ISensor sensor)
-{
-    //refresh the value
-    sensor.Hardware.Update();
+    public class UpdateVisitor : IVisitor
+    {
+        public void VisitComputer(IComputer computer)
+        {
+            computer.Traverse(this);
+        }
+        public void VisitHardware(IHardware hardware)
+        {
+            hardware.Update();
+            foreach (IHardware subHardware in hardware.SubHardware) subHardware.Accept(this);
+        }
+        public void VisitSensor(ISensor sensor)
+        {
+            //refresh the value
+            //sensor.Hardware.Update();
 
 
 
 
 
-}
-public void VisitParameter(IParameter parameter)
-{
-    //refresh the value
-    parameter.Sensor.Hardware.Update();
-}
-}
+        }
+        public void VisitParameter(IParameter parameter)
+        {
+            //refresh the value
+            //parameter.Sensor.Hardware.Update();
+        }
+    }
 }
