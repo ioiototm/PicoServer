@@ -23,7 +23,7 @@ namespace PicoServer
         //monitor
         private Monitor monitor;
         private NotifyIcon trayIcon;
-        private ComboBox gpuSelectionComboBox; // Added for GPU selection
+
 
         private bool exitButtonClicked = false;
 
@@ -36,18 +36,16 @@ namespace PicoServer
 
 
             //start serial port
-            monitor = new Monitor(richTextBox1, config);
+            monitor = new Monitor(richTextBox1, lbl_psu_value, lbl_mqttStatus, config);
 
-            // Initialize and populate GPU selection ComboBox
-            InitializeGpuSelectionComboBox();
-
+            // Populate GPU ComboBox — control is created in the designer, just fill it here
+            InitializeGpuComboBox();
 
             SystemEvents.SessionSwitch += SystemEvents_SessionSwitch;
             SystemEvents.PowerModeChanged += SystemEvents_PowerModeChanged;
 
             trayIcon = new NotifyIcon();
             trayIcon.Text = "PicoServer";
-            //use the same icon as the form
             trayIcon.Icon = this.Icon;
 
             trayIcon.MouseClick += (sender, e) =>
@@ -56,35 +54,21 @@ namespace PicoServer
                 {
                     this.Show();
                     this.WindowState = FormWindowState.Normal;
-                    // Ensure the ComboBox is brought to front if it was hidden
-                    gpuSelectionComboBox.BringToFront();
                 }
             };
-
         }
 
-        private void InitializeGpuSelectionComboBox()
+        private void InitializeGpuComboBox()
         {
-            gpuSelectionComboBox = new ComboBox();
-            gpuSelectionComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
-            gpuSelectionComboBox.Location = new System.Drawing.Point(15, 280); // Adjust location as needed
-            gpuSelectionComboBox.Size = new System.Drawing.Size(200, 21); // Adjust size as needed
-            gpuSelectionComboBox.Name = "gpuSelectionComboBox";
-
             List<string> gpuNames = monitor.GetGpuNames();
             if (gpuNames.Any())
             {
                 gpuSelectionComboBox.Items.AddRange(gpuNames.ToArray());
-                // Try to select preferred GPU from config, otherwise select the first one
                 string preferredGpu = monitor.GetSelectedGpuName();
                 if (!string.IsNullOrEmpty(preferredGpu) && gpuNames.Contains(preferredGpu))
-                {
                     gpuSelectionComboBox.SelectedItem = preferredGpu;
-                }
                 else
-                {
                     gpuSelectionComboBox.SelectedIndex = 0;
-                }
             }
             else
             {
@@ -92,10 +76,7 @@ namespace PicoServer
                 gpuSelectionComboBox.SelectedIndex = 0;
                 gpuSelectionComboBox.Enabled = false;
             }
-
             gpuSelectionComboBox.SelectedIndexChanged += GpuSelectionComboBox_SelectedIndexChanged;
-            this.Controls.Add(gpuSelectionComboBox);
-            gpuSelectionComboBox.BringToFront(); // Ensure it's visible
         }
 
         private void GpuSelectionComboBox_SelectedIndexChanged(object sender, EventArgs e)
@@ -163,7 +144,6 @@ namespace PicoServer
                     // The computer is waking up from sleep mode
                     await Task.Delay(2000); // Give system time to stabilize after wake-up
                     await monitor.ReconnectMqttClient();
-                    monitor.ReInitializeHardware(); // Add this new method call
                     monitor.send("WAKEUP");
                     break;
                 default:
@@ -185,52 +165,49 @@ namespace PicoServer
 
         }
 
+        // Last picked color in RGB565 hex — default white
+        private string _lastColorHex = "FFFF";
+
         private void radioButton1_CheckedChanged(object sender, EventArgs e)
         {
+            if (!rgb_single_color.Checked) return;
+            btn_pick_color.Enabled = true;
+            // Apply the last picked color immediately so the mode activates on first click
+            monitor.send("COLOR_MODE:SINGLE_COLOR;COLOR:" + _lastColorHex);
+        }
 
+        private void btn_pick_color_Click(object sender, EventArgs e)
+        {
+            // Pass 'this' as owner so the dialog appears in front of the form
+            if (colorDialog1.ShowDialog(this) != DialogResult.OK) return;
 
-
-            //if clicked off, do nothing
-            if (!rgb_single_color.Checked)
-            {
-                return;
-            }
-
-            //show color dialog
-            if (colorDialog1.ShowDialog() == DialogResult.OK)
-            {
-                //get color
-                Color c = colorDialog1.Color;
-                //convert colour to rgb565 format
-
-                // Convert the color to RGB565 format
-                int r = (c.R >> 3) & 0x1F;
-                int g = (c.G >> 2) & 0x3F;
-                int b = (c.B >> 3) & 0x1F;
-
-                // Combine the RGB components into a single 16-bit value
-                int rgb565 = (r << 11) | (g << 5) | b;
-
-                // Convert the RGB565 value to a hex string
-                string hexString = rgb565.ToString("X4");
-
-
-                monitor.send("COLOR_MODE:SINGLE_COLOR;COLOR:" + hexString);
-            }
+            Color c = colorDialog1.Color;
+            int r = (c.R >> 3) & 0x1F;
+            int g = (c.G >> 2) & 0x3F;
+            int b = (c.B >> 3) & 0x1F;
+            int rgb565 = (r << 11) | (g << 5) | b;
+            _lastColorHex = rgb565.ToString("X4");
+            monitor.send("COLOR_MODE:SINGLE_COLOR;COLOR:" + _lastColorHex);
         }
 
         private void radioButton2_CheckedChanged(object sender, EventArgs e)
         {
+            if (!rgb_rainbow_snake.Checked) return;
+            btn_pick_color.Enabled = false;
             monitor.send("COLOR_MODE:RAINBOW_SNAKE");
         }
 
         private void rgb_none_CheckedChanged(object sender, EventArgs e)
         {
+            if (!rgb_none.Checked) return;
+            btn_pick_color.Enabled = false;
             monitor.send("COLOR_MODE:NONE");
         }
 
         private void rgb_rainbow_line_CheckedChanged(object sender, EventArgs e)
         {
+            if (!rgb_rainbow_line.Checked) return;
+            btn_pick_color.Enabled = false;
             monitor.send("COLOR_MODE:RAINBOW_LINE");
         }
 
@@ -261,16 +238,21 @@ namespace PicoServer
 
         private IMqttClient _mqttClient;
         private AppConfig _config;
-        private List<IHardware> _gpus; // Added to store detected GPUs
-        private IHardware _selectedGpu; // Added to store the selected GPU
-        private string _preferredGpuName; // Added to store preferred GPU name from config
+        private List<IHardware> _gpus;
+        private IHardware _selectedGpu;
+        private string _preferredGpuName;
+        private System.Windows.Forms.Label _psuLabel;
+        private System.Windows.Forms.Label _mqttStatusLabel;
+        private readonly System.Threading.SynchronizationContext _syncContext;
 
-        //constructor
-        public Monitor(RichTextBox t1, AppConfig config)
+        public Monitor(RichTextBox t1, System.Windows.Forms.Label psuLabel, System.Windows.Forms.Label mqttStatusLabel, AppConfig config)
         {
-            this.textBox_info = t1;
-            _config = config; // Store config
-            _preferredGpuName = _config.PreferredGpuName; // Get preferred GPU name
+            this.textBox_info  = t1;
+            _psuLabel          = psuLabel;
+            _mqttStatusLabel   = mqttStatusLabel;
+            _config            = config;
+            _preferredGpuName  = _config.PreferredGpuName;
+            _syncContext       = System.Threading.SynchronizationContext.Current;
 
             //start serial port
             serialPort = new System.IO.Ports.SerialPort(config.SerialPort.PortName, config.SerialPort.BaudRate);
@@ -368,6 +350,7 @@ namespace PicoServer
             await _mqttClient.ConnectAsync(options, System.Threading.CancellationToken.None);
 
             await PublishAvailability("online");
+            SetMqttStatus("● Connected", true);
 
             var message = new MqttApplicationMessageBuilder()
                 .WithTopic("homeassistant/sensor/THE-BEAST/PSUWattage/config")
@@ -390,10 +373,37 @@ namespace PicoServer
             await _mqttClient.PublishAsync(message, System.Threading.CancellationToken.None);
         }
 
+        private void SetMqttStatus(string text, bool online)
+        {
+            var color = online
+                ? System.Drawing.Color.FromArgb(100, 210, 120)
+                : System.Drawing.Color.FromArgb(200, 80, 80);
+            _syncContext?.Post(_ =>
+            {
+                if (_mqttStatusLabel != null)
+                {
+                    _mqttStatusLabel.Text      = text;
+                    _mqttStatusLabel.ForeColor = color;
+                }
+            }, null);
+        }
+
         //function to send a string over serial with \n at the end
         public void send(string s)
         {
-            serialPort.Write(s + "\n");
+            try
+            {
+                serialPort.Write(s + "\n");
+                if (textBox_info.IsHandleCreated)
+                    textBox_info.Invoke((MethodInvoker)(() =>
+                        textBox_info.Text = $"[CMD] {s}\n\n" + textBox_info.Text.Substring(0, Math.Min(textBox_info.Text.Length, 100))));
+            }
+            catch (Exception ex)
+            {
+                if (textBox_info.IsHandleCreated)
+                    textBox_info.Invoke((MethodInvoker)(() =>
+                        textBox_info.Text = $"[SEND ERROR] {ex.Message}"));
+            }
         }
 
         public async Task PublishOfflineAsync()
@@ -454,6 +464,7 @@ namespace PicoServer
                     await _mqttClient.ConnectAsync(options, System.Threading.CancellationToken.None);
 
                     await PublishAvailability("online");
+                    SetMqttStatus("● Connected", true);
 
                     textBox_info.Invoke((MethodInvoker)delegate {
                         textBox_info.AppendText("MQTT client reconnected successfully\n");
@@ -660,9 +671,19 @@ namespace PicoServer
                 else
                     uploadSpeed = (usBps / 1000000.0).ToString("F1") + " mbps";
 
-                // Values are already doubles now — no Convert.ToDouble needed
+                // Serial write stays raw for the Pico to parse
                 serialPort.Write("CPU:" + Math.Round(cpuTemp) + ":" + Math.Round(cpuUsage) + ";GPU:" + Math.Round(gpuTemp) + ";VMEM:" + Math.Round(vramUsagePercent) + ";RAM:" + Math.Round(ramUsagePercent) + ";DS:" + downloadSpeed + ";US:" + uploadSpeed + "\n");
-                textBox_info.Text = "CPU:" + Math.Round(cpuTemp) + ":" + Math.Round(cpuUsage) + ";GPU:" + Math.Round(gpuTemp) + ";VMEM:" + Math.Round(vramUsagePercent) + ";RAM:" + Math.Round(ramUsagePercent) + ";DS:" + downloadSpeed + ";US:" + uploadSpeed + "\n";
+
+                // Human-readable stats panel
+                textBox_info.Text =
+                    $"  CPU   {Math.Round(cpuTemp),3}°C   {Math.Round(cpuUsage),3}% load" +
+                    $"          GPU   {Math.Round(gpuTemp),3}°C   VRAM {Math.Round(vramUsagePercent),3}%\n" +
+                    $"  RAM   {Math.Round(ramUsagePercent),3}%" +
+                    $"                         Net   ↓ {downloadSpeed,-14}  ↑ {uploadSpeed}";
+
+                // Update the PSU wattage widget
+                if (_psuLabel != null && previousWattage.HasValue)
+                    _psuLabel.Invoke((MethodInvoker)(() => _psuLabel.Text = previousWattage.Value.ToString("F0") + " W"));
             }
             finally
             {
@@ -671,7 +692,7 @@ namespace PicoServer
             }
         }
 
-        public void ReInitializeHardware()
+        public async Task ReInitializeHardware()
         {
             try
             {
@@ -688,8 +709,36 @@ namespace PicoServer
                 computer.Open();
                 computer.Accept(new UpdateVisitor());
 
-                // Re-initialize GPU list and selection
-                InitializeGpus();
+                // Re-initialize GPU list — GPU driver may not be ready immediately after wake,
+                // so retry until a GPU is found or we give up
+                const int maxAttempts = 5;
+                for (int attempt = 1; attempt <= maxAttempts; attempt++)
+                {
+                    InitializeGpus();
+                    if (_selectedGpu != null)
+                        break;
+
+                    if (attempt < maxAttempts)
+                    {
+                        textBox_info.Invoke((MethodInvoker)delegate {
+                            textBox_info.AppendText("GPU not ready yet, retrying...\n");
+                        });
+                        await Task.Delay(3000);
+
+                        // Reopen to pick up newly available GPU hardware
+                        computer.Close();
+                        computer = new Computer
+                        {
+                            IsCpuEnabled = true,
+                            IsGpuEnabled = true,
+                            IsMemoryEnabled = true,
+                            IsPsuEnabled = true,
+                            IsNetworkEnabled = true
+                        };
+                        computer.Open();
+                        computer.Accept(new UpdateVisitor());
+                    }
+                }
 
                 // Force a hardware update cycle
                 foreach (IHardware hardware in computer.Hardware)
@@ -701,7 +750,9 @@ namespace PicoServer
                 previousWattage = null;
 
                 textBox_info.Invoke((MethodInvoker)delegate {
-                    textBox_info.AppendText("Hardware monitoring reinitialized after wake-up\n");
+                    textBox_info.AppendText(_selectedGpu != null
+                        ? "Hardware monitoring reinitialized after wake-up\n"
+                        : "Hardware reinitialized but no GPU found\n");
                 });
             }
             catch (Exception ex)
